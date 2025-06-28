@@ -1,123 +1,224 @@
-# xv6 Priority Scheduler
+# xv6 Filesystem Checker
 
-A priority-based process scheduler implementation for the xv6 operating system, replacing the default round-robin scheduler with a more sophisticated priority queue system.
+A comprehensive filesystem integrity checker for xv6 filesystems, similar to `fsck` on Unix systems. Detects and reports eight categories of filesystem corruption through low-level disk analysis.
 
 ## Overview
 
-This project implements a priority-based process scheduler in xv6, a teaching operating system developed at MIT. The scheduler supports multiple priority levels (0-5) with round-robin scheduling within each priority level, following the rules:
+This tool performs deep structural analysis of xv6 filesystem images to detect inconsistencies that could lead to data corruption or system instability. It validates filesystem metadata, directory structures, inode relationships, and block allocation consistency.
 
-1. **Higher priority processes run first** - If Priority(A) > Priority(B), A runs (B doesn't)
-2. **Equal priority processes use round-robin** - If Priority(A) = Priority(B), A & B run in round robin
+## Features
 
-## Key Features
+- **Comprehensive Validation**: Checks 8 categories of filesystem corruption
+- **Low-level Analysis**: Direct disk block reading and parsing
+- **Bitmap Verification**: Validates block allocation consistency  
+- **Directory Structure**: Ensures proper parent-child relationships
+- **Inode Integrity**: Verifies inode table consistency
+- **Memory Efficient**: Minimal memory footprint with efficient algorithms
 
-- **Priority Queue System**: Implemented separate runnable queues for each priority level (0-5)
-- **System Calls**: Added `getprio()` and `setprio()` system calls for priority management
-- **Atomic Operations**: Thread-safe priority scheduling with proper locking mechanisms
-- **Process Management**: Enhanced process control blocks to track priority and queue membership
+## Filesystem Corruption Detection
 
-## Implementation Details
+The checker validates the following filesystem properties:
 
-### Core Components
+### 1. Block Address Validation
+**Error**: `ERROR: bad address in inode`
+- Validates all direct and indirect block pointers
+- Ensures addresses point to valid data blocks within filesystem bounds
+- Checks both direct blocks and indirect block traversal
 
-**Priority Queue Management** (`kernel/proc.c`):
-- `struct runnable_queue`: Lock-protected queues for each priority level
-- `enqueue_runnable()`: Adds processes to appropriate priority queue
-- `dequeue_runnable()`: Removes highest priority process for scheduling
-- `prioscheduler()`: Main scheduling loop replacing default scheduler
+### 2. Directory Format Validation  
+**Error**: `ERROR: directory not properly formatted`
+- Verifies every directory contains `.` and `..` entries
+- Ensures `.` entry points to directory's own inode
+- Validates directory entry structure integrity
 
-**System Call Interface** (`kernel/sysproc.c`):
-- `sys_getprio(int pid)`: Returns current priority of specified process
-- `sys_setprio(int priority)`: Sets priority of current process
-- Input validation and error handling for invalid PIDs/priorities
+### 3. Parent-Child Consistency
+**Error**: `ERROR: parent directory mismatch`
+- Confirms `..` entries point to correct parent inodes
+- Verifies bidirectional parent-child relationships
+- Handles special case of root directory
 
-**Process Structure Enhancements** (`kernel/proc.h`):
+### 4. Block Allocation Consistency
+**Error**: `ERROR: address used by inode but marked free in bitmap`
+- Cross-references inode block usage with allocation bitmap
+- Ensures all referenced blocks are marked as allocated
+- Validates both direct and indirect block references
+
+### 5. Bitmap Accuracy
+**Error**: `ERROR: bitmap marks block in use but it is not in use`
+- Identifies blocks marked allocated but not referenced by any inode
+- Prevents space leaks and allocation errors
+- Accounts for system blocks (superblock, inodes, bitmap)
+
+### 6. Block Reference Uniqueness
+**Error**: `ERROR: address used more than once`
+- Detects blocks referenced by multiple inodes
+- Prevents data corruption from shared block references
+- Maintains filesystem integrity invariants
+
+### 7. Inode Reference Validation
+**Error**: `ERROR: inode marked used but not found in a directory`
+- Ensures all allocated inodes are reachable from directory tree
+- Prevents orphaned inodes and resource leaks
+- Validates filesystem connectivity
+
+### 8. Directory Reference Integrity
+**Error**: `ERROR: inode referred to in directory but marked free`
+- Confirms directory entries point to allocated inodes
+- Prevents references to uninitialized or freed inodes
+- Maintains directory consistency
+
+## Technical Implementation
+
+### Core Architecture
+
+**Block Reader** (`rblock` function):
 ```c
-struct proc {
-    // ... existing fields
-    int priority;              // Process priority (0-5)
-    struct proc *rqueue_next;  // Queue linkage pointer
-};
+int rblock(uint bnum, void *buf)
 ```
+- Low-level disk block reading interface
+- Handles filesystem image file operations
+- Provides foundation for all filesystem access
 
-### Technical Challenges Solved
+**Inode Management**:
+```c
+int read_inode(struct superblock *sb, uint inum, struct dinode *dip)
+int check_inode_blocks(struct superblock *sb, struct dinode *dip)
+```
+- Reads inode data from disk blocks
+- Validates block address ranges and allocation
 
-1. **Concurrency Control**: Implemented fine-grained locking for each priority queue to prevent race conditions
-2. **Queue Management**: Designed efficient linked-list based queues with O(1) enqueue/dequeue operations
-3. **Priority Inheritance**: Ensured child processes inherit appropriate priority levels
-4. **System Integration**: Seamlessly integrated new scheduler with existing xv6 process management
+**Directory Analysis**:
+```c
+int read_all_dirents(struct superblock *sb, struct dinode *dip, struct dirent *entries, int max_entries)
+int check_dot_and_dotdot(struct dirent *entries, int count, uint self_inum)
+```
+- Parses directory entries from data blocks
+- Validates directory structure requirements
 
-## Building and Running
+**Bitmap Operations**:
+```c
+int is_block_allocated(struct superblock *sb, uint blockno)
+int *build_block_reference_map(struct superblock *sb)
+```
+- Reads and interprets allocation bitmap
+- Builds comprehensive block usage maps
+
+### Data Structures
+
+**Filesystem Metadata**:
+- Superblock parsing and validation
+- Inode table traversal and analysis
+- Directory entry interpretation
+
+**Reference Tracking**:
+- Block reference counting for duplicate detection
+- Inode reference mapping for orphan detection
+- Parent-child relationship validation
+
+## Building and Usage
 
 ### Prerequisites
-- RISC-V cross-compilation toolchain
-- QEMU RISC-V system emulator
+- GCC compiler
+- POSIX-compliant system
 
 ### Build Instructions
 ```bash
-make qemu
+make
 ```
 
-### Testing the Scheduler
-Run the included test programs in the xv6 shell:
+### Running the Checker
 ```bash
-# Test priority system calls
-priotest
-
-# Test equal priority scheduling
-equaltest
-
-# Test different priority scheduling  
-difftest
-
-# Custom tests
-mytests
+./chkfs filesystem.img
 ```
+
+### Return Codes
+- **0**: Filesystem is consistent (no errors)
+- **1**: Corruption detected (specific error message printed)
+
+## Testing
+
+### Test with Clean Filesystem
+```bash
+./chkfs uncorrupted.img
+# Should produce no output and return 0
+```
+
+### Test with Corrupted Filesystem
+```bash
+# Create corrupted test image
+cp uncorrupted.img corrupted.img
+./corruptfs corrupted.img 1  # Introduce type 1 corruption
+
+# Run checker
+./chkfs corrupted.img
+# Should output: ERROR: bad address in inode
+```
+
+### Corruption Types for Testing
+Use `corruptfs` tool to introduce specific corruption types (1-8) corresponding to the error categories above.
 
 ## Code Structure
 
 ```
-kernel/
-├── proc.c          # Priority scheduler implementation
-├── proc.h          # Enhanced process structure
-├── sysproc.c       # Priority system calls
-├── syscall.c       # System call routing
-├── param.h         # Priority constants (MAXPRIO, STARTPRIO)
-└── defs.h          # Function declarations
-
-user/
-├── priotest.c      # Priority system call tests
-├── equaltest.c     # Equal priority scheduling tests
-├── difftest.c      # Different priority scheduling tests
-└── mytests.c       # Custom test suite
+├── chkfs.c             # Main checker implementation
+├── kernel/             # xv6 filesystem headers
+│   ├── fs.h           # Filesystem structure definitions  
+│   ├── types.h        # Basic type definitions
+│   └── stat.h         # File metadata structures
+└── Makefile           # Build configuration
 ```
 
-## Performance Characteristics
+## Algorithm Complexity
 
-- **Time Complexity**: O(1) for process enqueueing/dequeueing
-- **Space Complexity**: O(n) where n is the number of priority levels
-- **Fairness**: Round-robin within priority levels ensures fairness
-- **Responsiveness**: Higher priority processes get immediate CPU access
+- **Time Complexity**: O(n + m) where n = inodes, m = blocks
+- **Space Complexity**: O(n) for reference tracking arrays
+- **I/O Complexity**: Single pass through filesystem with minimal seeks
+
+## Key Algorithms
+
+### Block Reference Analysis
+1. **Build Reference Map**: Single pass through all inodes to count block references
+2. **Bitmap Comparison**: Compare reference counts with allocation bitmap
+3. **Duplicate Detection**: Identify blocks referenced multiple times
+
+### Directory Tree Validation  
+1. **Structure Check**: Validate `.` and `..` in every directory
+2. **Parent Verification**: Confirm bidirectional parent-child relationships
+3. **Reachability Analysis**: Ensure all inodes reachable from root
+
+### Inode Consistency
+1. **Address Validation**: Check all direct/indirect block addresses
+2. **Type Verification**: Ensure inodes match directory references
+3. **Allocation Consistency**: Cross-reference with inode allocation table
 
 ## Educational Context
 
-This project was developed as part of an operating systems course to demonstrate understanding of:
-- Process scheduling algorithms
-- Kernel programming and system calls
-- Concurrency and synchronization
-- Operating system design principles
+This project demonstrates understanding of:
+- Filesystem data structures and layout
+- Low-level disk operations and binary data parsing
+- Graph algorithms for tree validation
+- Memory management and efficient algorithms
+- Systems programming and debugging techniques
 
 ## Technical Skills Demonstrated
 
-- **C Programming**: Low-level kernel development in C
-- **Operating Systems**: Process management, scheduling, system calls
-- **Concurrency**: Multi-threaded programming with locks and atomic operations
-- **Systems Programming**: Kernel-level debugging and development
+- **C Programming**: Complex data structure manipulation and pointer arithmetic
+- **Systems Programming**: Low-level file I/O and binary data parsing
+- **Algorithm Design**: Efficient graph traversal and validation algorithms
+- **Debugging**: Systematic approach to finding filesystem inconsistencies
+- **Software Engineering**: Modular design with helper functions and clear interfaces
+
+## Filesystem Knowledge
+
+- **Disk Layout**: Superblock, inode tables, data blocks, allocation bitmaps
+- **Directory Structures**: Directory entries, parent-child relationships
+- **Indirect Blocks**: Multi-level indirection for large files
+- **Allocation Algorithms**: Block allocation and deallocation strategies
 
 ## License
 
-Based on xv6, which is licensed under the MIT License. Original xv6 code copyright (c) 2006-2024 Frans Kaashoek, Robert Morris, Russ Cox, Massachusetts Institute of Technology.
+Based on xv6 filesystem format, which is MIT licensed. Checker implementation is original work.
 
 ## Acknowledgments
 
-Built upon the xv6 operating system developed at MIT. Implementation of priority scheduling system and system calls is original work.
+Built for xv6 filesystem format developed at MIT. Filesystem checker logic and implementation is original work demonstrating deep understanding of filesystem internals.
